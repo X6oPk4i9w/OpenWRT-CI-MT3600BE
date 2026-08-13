@@ -2,7 +2,7 @@
 # Copyright (C) 2026 VIKINGYFY
 
 #CI项目
-name: MT6000
+name: MT3600BE
 
 #CI计划
 on:
