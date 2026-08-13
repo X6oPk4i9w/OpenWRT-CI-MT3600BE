@@ -1,9 +1,9 @@
 #!/bin/sh
-# GL-MT6000 首次启动个性化设置
+# GL-MT3600BE 首次启动个性化设置
 
 #---------- 系统 ----------
 uci -q batch <<-EOF
-	set system.@system[0].hostname='GLMT6000_28'
+	set system.@system[0].hostname='GLMT3600BE_38'
 	set system.@system[0].timezone='CST-8'
 	set system.@system[0].zonename='Asia/Shanghai'
 	set system.@system[0].ttylogin='0'
