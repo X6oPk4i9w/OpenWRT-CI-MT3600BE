@@ -41,7 +41,7 @@ jobs:
       #默认WIFI名称（实际按频段区分，见 Files/etc/uci-defaults/99-mt6000-custom）
       WRT_SSID: MT3600BE
       #默认WIFI密码
-      WRT_WORD: password
+      WRT_WORD: ljx2026@.
       #默认地址
       WRT_IP: 192.168.38.1
       #默认密码，仅作提示，修改无用
