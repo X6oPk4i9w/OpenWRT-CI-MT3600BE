@@ -1,53 +1,754 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 VIKINGYFY
+
+# 云编译公用核心
+name: WRT-CORE
+
+on:
+  workflow_call:
+    inputs:
+
+      WRT_CONFIG:
+        required: true
+        type: string
+
+      WRT_THEME:
+        required: true
+        type: string
+
+      WRT_NAME:
+        required: true
+        type: string
+
+      WRT_SSID:
+        required: true
+        type: string
+
+      WRT_WORD:
+        required: true
+        type: string
+
+      WRT_IP:
+        required: true
+        type: string
+
+      WRT_PW:
+        required: true
+        type: string
+
+      WRT_REPO:
+        required: true
+        type: string
+
+      WRT_BRANCH:
+        required: true
+        type: string
+
+      WRT_SOURCE:
+        required: true
+        type: string
+
+      WRT_PACKAGE:
+        required: false
+        type: string
+
+      WRT_TEST:
+        required: false
+        type: string
+
+
+# ============================================================
+# 全局环境变量
+# ============================================================
+
+env:
+
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  WRT_CONFIG: ${{ inputs.WRT_CONFIG }}
+  WRT_THEME: ${{ inputs.WRT_THEME }}
+  WRT_NAME: ${{ inputs.WRT_NAME }}
+  WRT_SSID: ${{ inputs.WRT_SSID }}
+  WRT_WORD: ${{ inputs.WRT_WORD }}
+  WRT_IP: ${{ inputs.WRT_IP }}
+  WRT_PW: ${{ inputs.WRT_PW }}
+
+  WRT_REPO: ${{ inputs.WRT_REPO }}
+  WRT_BRANCH: ${{ inputs.WRT_BRANCH }}
+  WRT_SOURCE: ${{ inputs.WRT_SOURCE }}
+
+  WRT_PACKAGE: ${{ inputs.WRT_PACKAGE }}
+  WRT_TEST: ${{ inputs.WRT_TEST }}
+
+
+# ============================================================
+# 编译任务
+# ============================================================
+
+jobs:
+
+  core:
+
+    name: ${{ inputs.WRT_SOURCE }}
+
+    runs-on: ubuntu-24.04
+
+    steps:
+
+      # ========================================================
+      # Checkout CI项目
+      # ========================================================
+
+      - name: Checkout Projects
+        uses: actions/checkout@main
+
+
+      # ========================================================
+      # 初始化编译环境
+      # ========================================================
+
+      - name: Initialization Environment
+
+        env:
+          DEBIAN_FRONTEND: noninteractive
+
+        run: |
+
+          sudo -E apt -yqq purge firefox
+
+          sudo -E apt -yqq update
+
+          sudo -E apt -yqq full-upgrade
+
+          sudo -E apt -yqq autoremove --purge
+
+          sudo -E apt -yqq autoclean
+
+          sudo -E apt -yqq clean
+
+          sudo -E apt -yqq install \
+            dos2unix \
+            libfuse-dev
+
+
+          # ImmortalWrt 官方编译环境初始化脚本
+          sudo bash -c \
+            'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+
+
+          sudo -E systemctl daemon-reload
+
+
+          # 设置北京时间
+          sudo -E timedatectl set-timezone "Asia/Shanghai"
+
+
+          # ====================================================
+          # 创建独立编译目录
+          # ====================================================
+
+          sudo mkdir -p /mnt/build_wrt
+
+          sudo chown "$USER":"$USER" /mnt/build_wrt
+
+          sudo ln -s /mnt/build_wrt "$GITHUB_WORKSPACE/wrt"
+
+
+      # ========================================================
+      # 初始化变量
+      # ========================================================
+
+      - name: Initialization Values
+
+        run: |
+
+          # ====================================================
+          # 固件时间
+          #
+          # TZ=UTC-8
+          # 实际表示北京时间 UTC+8
+          # ====================================================
+
+          echo "WRT_DATE=$(TZ=UTC-8 date +"%y.%m.%d-%H.%M.%S")" \
+            >> "$GITHUB_ENV"
+
+
+          # GitHub用户名
+          echo "WRT_MARK=${GITHUB_REPOSITORY%%/*}" \
+            >> "$GITHUB_ENV"
+
+
+          # immortalwrt/immortalwrt
+          #
+          # 取第一个 immortalwrt
+          echo "WRT_INFO=${WRT_SOURCE%%/*}" \
+            >> "$GITHUB_ENV"
+
+
+          # ====================================================
+          # 获取目标平台
+          #
+          # 例如：
+          #
+          # CONFIG_TARGET_mediatek=y
+          #
+          # 最终：
+          #
+          # WRT_TARGET=mediatek
+          # ====================================================
+
+          echo "WRT_TARGET=$(grep -m 1 \
+            -oP '^CONFIG_TARGET_\K[\w]+(?=\=y)' \
+            ./Config/$WRT_CONFIG.txt)" \
+            >> "$GITHUB_ENV"
+
+
+          echo "WRT_WIFI=wifi-yes" \
+            >> "$GITHUB_ENV"
+
+
+          # 默认值
+          echo "WRT_KVER=none" \
+            >> "$GITHUB_ENV"
+
+          echo "WRT_LIST=none" \
+            >> "$GITHUB_ENV"
+
+
+      # ========================================================
+      # 下载 ImmortalWrt 源码
+      # ========================================================
+
+      - name: Clone Code
+
+        run: |
+
+          git clone \
+            --depth=1 \
+            --single-branch \
+            --branch "$WRT_BRANCH" \
+            "$WRT_REPO" \
+            ./wrt/
+
+
+          cd ./wrt/
+
+
+          # ====================================================
+          # 获取源码提交HASH
+          # ====================================================
+
+          echo "WRT_HASH=$(git log -1 --pretty=format:'%h')" \
+            >> "$GITHUB_ENV"
+
+
+          # ====================================================
+          # GitHub Action 移除国内下载源
+          # ====================================================
+
+          PROJECT_MIRRORS_FILE="./scripts/projectsmirrors.json"
+
+
+          if [ -f "$PROJECT_MIRRORS_FILE" ]; then
+
+            sed -i \
+              '/.cn\//d; /tencent/d; /aliyun/d' \
+              "$PROJECT_MIRRORS_FILE"
+
+          fi
+
+
+      # ========================================================
+      # 检查脚本文件
+      # ========================================================
+
+      - name: Check Scripts
+
+        run: |
+
+          find ./ \
+            -maxdepth 3 \
+            -type f \
+            -iregex ".*\(txt\|sh\)$" \
+            -exec dos2unix {} \; \
+            -exec chmod +x {} \;
+
+
+      # ========================================================
+      # 检查编译缓存
+      # ========================================================
+
+      - name: Check Caches
+
+        id: check-cache
+
+        if: env.WRT_TEST != 'true'
+
+        uses: actions/cache@main
+
+        with:
+
+          key: ${{ env.WRT_CONFIG }}-${{ env.WRT_INFO }}-${{ env.WRT_HASH }}
+
+          restore-keys: |
+            ${{ env.WRT_CONFIG }}-${{ env.WRT_INFO }}
+
+          path: |
+
+            ./wrt/.ccache
+
+            ./wrt/staging_dir/host*
+
+            ./wrt/staging_dir/tool*
+
+
+      # ========================================================
+      # 修复恢复后的缓存
+      # ========================================================
+
+      - name: Update Caches
+
+        if: env.WRT_TEST != 'true'
+
+        run: |
+
+          if [ -d "./wrt/staging_dir" ]; then
+
+            find "./wrt/staging_dir" \
+              -type d \
+              -name "stamp" \
+              -not -path "*target*" \
+              | while read -r DIR; do
+
+                  find "$DIR" \
+                    -type f \
+                    -exec touch {} +
+
+                done
+
+
+            mkdir -p ./wrt/tmp
+
+            echo "1" > ./wrt/tmp/.build
+
+
+            echo "toolchain skiped done!"
+
+          else
+
+            echo "caches missed!"
+
+          fi
+
+
+      # ========================================================
+      # 更新 Feeds
+      # ========================================================
+
+      - name: Update Feeds
+
+        run: |
+
+          cd ./wrt/
+
+
+          # ====================================================
+          # 追加自定义 feeds
+          #
+          # 顺序与本地一致
+          # 不要随意调换
+          # ====================================================
+
+          echo "" >> feeds.conf.default
+
+
+          cat >> feeds.conf.default <<-EOF
+          src-git mosdns https://github.com/sbwml/luci-app-mosdns.git;v5
+          src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main
+          src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main
+          src-git helloworld https://github.com/fw876/helloworld.git
+          src-git openclash https://github.com/vernesong/OpenClash.git
+          src-git istore https://github.com/linkease/istore;main
+          EOF
+
+
+          echo "===== feeds.conf.default ====="
+
+          cat feeds.conf.default
+
+          echo "============================="
+
+
+          # ====================================================
+          # 更新全部 feeds
+          # ====================================================
+
+          ./scripts/feeds update -a
+
+
+          # ====================================================
+          # 删除源码树自带同名软件包
+          #
+          # 让自定义 feeds 版本生效
+          # ====================================================
+
+          rm -rf ./feeds/luci/applications/luci-app-argon-config
+
+          rm -rf ./feeds/luci/applications/luci-app-openclash
+
+          rm -rf ./feeds/luci/applications/luci-app-passwall
+
+          rm -rf ./feeds/luci/themes/luci-theme-argon
+
+          rm -rf ./feeds/packages/net/mosdns
+
+          rm -rf ./feeds/packages/net/v2ray-geodata
+
+
+          # ====================================================
+          # ImmortalWrt 自带版本偏旧
+          #
+          # 删除后使用 passwall_packages 中的新版本
+          # ====================================================
+
+          rm -rf ./feeds/packages/net/xray-core
+
+          rm -rf ./feeds/packages/net/sing-box
+
+          rm -rf ./feeds/packages/net/hysteria
+
+          rm -rf ./feeds/packages/net/naiveproxy
+
+
+          # ====================================================
+          # 删除后必须重新建立索引
+          #
+          # 否则旧索引可能留下断链
+          # ====================================================
+
+          ./scripts/feeds update -i
+
+
+          # ====================================================
+          # 安装全部 feeds
+          # ====================================================
+
+          ./scripts/feeds install -a
+
+
+          # ====================================================
+          # 清理断掉的符号链接
+          # ====================================================
+
+          find ./package/feeds/ \
+            -xtype l \
+            -exec rm -f {} + \
+            2>/dev/null || true
+
+
+      # ========================================================
+      # 添加自定义软件包
+      # ========================================================
+
+      - name: Custom Packages
+
+        run: |
+
+          cd ./wrt/package/
+
+
+          "$GITHUB_WORKSPACE/Scripts/Packages.sh"
+
+          "$GITHUB_WORKSPACE/Scripts/Handles.sh"
+
+
+      # ========================================================
+      # 添加自定义 Files
+      # ========================================================
+
+      - name: Custom Files
+
+        run: |
+
+          if [ -d "$GITHUB_WORKSPACE/Files" ]; then
+
+            mkdir -p ./wrt/files
+
+
+            cp -rf \
+              "$GITHUB_WORKSPACE/Files/." \
+              ./wrt/files/
+
+
+            # ==================================================
+            # 只转换 uci-defaults 文本脚本
+            #
+            # Files 中还有：
+            #
+            # OpenClash 内核
+            # Geo 数据
+            #
+            # 等二进制文件
+            #
+            # 不能对整个 Files 执行 dos2unix
+            # ==================================================
+
+            find ./wrt/files/etc/uci-defaults/ \
+              -type f \
+              -exec dos2unix {} \; \
+              2>/dev/null || true
+
+
+            find ./wrt/files/etc/uci-defaults/ \
+              -type f \
+              -exec chmod +x {} \; \
+              2>/dev/null || true
+
+
+            chmod 755 \
+              ./wrt/files/etc/openclash/core/clash_meta \
+              2>/dev/null || true
+
+
+            echo "===== files ====="
+
+            find ./wrt/files/ -type f
+
+            echo "================="
+
+          fi
+
+
+      # ========================================================
+      # 应用配置
+      # ========================================================
+
+      - name: Custom Settings
+
+        run: |
+
+          cd ./wrt/
+
+
+          # ====================================================
+          # 加载设备配置
+          # ====================================================
+
+          cat \
+            "$GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt" \
+            >> .config
+
+
+          # ====================================================
+          # 执行自定义设置
+          # ====================================================
+
+          "$GITHUB_WORKSPACE/Scripts/Settings.sh"
+
+
+          # ====================================================
+          # 生成最终配置
+          # ====================================================
+
+          make defconfig -j"$(nproc)"
+
+
+          # ====================================================
+          # 清理目标编译文件
+          # ====================================================
+
+          make clean -j"$(nproc)"
+
+
+      # ========================================================
+      # 下载源码软件包
+      # ========================================================
+
+      - name: Download Packages
+
+        if: env.WRT_TEST != 'true'
+
+        run: |
+
+          cd ./wrt/
+
+
+          make download -j"$(nproc)"
+
+
+      # ========================================================
+      # 编译固件
+      # ========================================================
+
+      - name: Compile Firmware
+
+        if: env.WRT_TEST != 'true'
+
+        run: |
+
+          cd ./wrt/
+
+
+          # ====================================================
+          # 第一次：
+          # 使用全部CPU线程
+          #
+          # 失败后：
+          # 输出详细日志
+          #
+          # 再失败：
+          # 单线程详细日志
+          # ====================================================
+
+          make -j"$(nproc)" \
+            || make -j"$(nproc)" V=s \
+            || make -j1 V=s
+
+
+      # ========================================================
+      # 清理旧 Cache
+      # ========================================================
+
+      - name: Cleanup Caches
+
+        if: >
+          success() &&
+          env.WRT_TEST != 'true' &&
+          steps.check-cache.outputs.cache-hit != 'true'
+
+        run: |
+
+          CACHE_LIST=$(gh cache list \
+            --key "$WRT_CONFIG-$WRT_INFO" \
+            | cut -f 1)
+
+
+          for CACHE_KEY in $CACHE_LIST; do
+
+            gh cache delete "$CACHE_KEY"
+
+          done
+
+
+          echo "caches cleanup done!"
+
+
+      # ========================================================
+      # 显示编译机信息
+      # ========================================================
+
+      - name: Machine Information
+
+        run: |
+
+          cd ./wrt/
+
+
+          echo "======================="
+
+          lscpu | grep -E "name|Core|Thread"
+
+          echo "======================="
+
+          df -h
+
+          echo "======================="
+
+          du -h --max-depth=1
+
+          echo "======================="
+
+
       # ========================================================
       # 整理固件
       # ========================================================
 
       - name: Package Firmware
+
         shell: bash
 
         run: |
 
           set -euo pipefail
 
+
           cd ./wrt/
 
+
+          # ====================================================
           # 创建上传目录
+          # ====================================================
+
           mkdir -p ./upload/
+
 
           # ====================================================
           # 保存本次编译配置
           # ====================================================
 
-          cp -f ./.config \
+          cp -f \
+            ./.config \
             ./upload/Config-"$WRT_CONFIG"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE".txt
 
 
           # ====================================================
           # 正常编译模式
+          #
+          # TEST=true 时只上传配置文件
           # ====================================================
 
           if [[ "$WRT_TEST" != 'true' ]]; then
+
 
             # ==================================================
             # 获取内核版本
             # ==================================================
 
-            echo "WRT_KVER=$(find ./bin/targets/ \
-              -type f \
-              -name "*.manifest" \
-              -exec grep -oP '^kernel - \K[\d\.]+' {} \; \
-              | head -n 1)" >> "$GITHUB_ENV"
+            WRT_KERNEL_VERSION=$(
+
+              find ./bin/targets/ \
+                -type f \
+                -name "*.manifest" \
+                -exec grep -oP \
+                  '^kernel - \K[\d\.]+' \
+                  {} \; \
+                | head -n 1
+
+            )
+
+
+            if [ -n "$WRT_KERNEL_VERSION" ]; then
+
+              echo "WRT_KVER=$WRT_KERNEL_VERSION" \
+                >> "$GITHUB_ENV"
+
+            fi
 
 
             # ==================================================
             # 获取 LuCI 插件列表
             # ==================================================
 
-            echo "WRT_LIST=$(find ./bin/targets/ \
-              -type f \
-              -name "*.manifest" \
-              -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; \
-              | tr '\n' ' ')" >> "$GITHUB_ENV"
+            WRT_LUCI_LIST=$(
+
+              find ./bin/targets/ \
+                -type f \
+                -name "*.manifest" \
+                -exec grep -oP \
+                  '^luci-(app|theme)[^ ]*' \
+                  {} \; \
+                | sort -u \
+                | tr '\n' ' '
+
+            )
+
+
+            if [ -n "$WRT_LUCI_LIST" ]; then
+
+              echo "WRT_LIST=$WRT_LUCI_LIST" \
+                >> "$GITHUB_ENV"
+
+            fi
 
 
             # ==================================================
@@ -55,50 +756,103 @@
             # ==================================================
 
             find ./bin/targets/ \
-              -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" \
+              -iregex \
+              ".*\(buildinfo\|json\|sha256sums\|packages\)$" \
               -exec rm -rf {} +
 
 
             # ==================================================
-            # 找到当前设备固件并重新命名
+            # 找到目标固件
+            #
+            # 并加入：
+            #
+            # immortalwrt
+            # openwrt-25.12
+            # wifi-yes
+            # 编译日期
+            #
+            # 等信息
             # ==================================================
 
             while IFS= read -r FILE; do
 
+
               [ -f "$FILE" ] || continue
+
 
               BASENAME=$(basename "$FILE")
 
+
+              # =================================================
+              # 获取扩展名
+              #
+              # 例如：
+              #
+              # xxx-squashfs-sysupgrade.bin
+              #
+              # 得到：
+              #
+              # bin
+              # =================================================
+
               EXT="${BASENAME#*.}"
 
-              NAME=$(echo "$BASENAME" \
-                | grep -io "\($WRT_TARGET\).*" \
-                | cut -d '.' -f 1 || true)
 
-              # 如果没有匹配设备名
-              # 就保持原文件名
+              # =================================================
+              # 获取目标名称
+              # =================================================
+
+              NAME=$(
+
+                echo "$BASENAME" \
+                  | grep -io "\($WRT_TARGET\).*" \
+                  | cut -d '.' -f 1 \
+                  || true
+
+              )
+
+
+              # 没匹配到就跳过
               if [ -z "$NAME" ]; then
+
                 continue
+
               fi
+
 
               NEW_FILE="${NAME}-${WRT_INFO}-${WRT_BRANCH}-${WRT_WIFI}-${WRT_DATE}.${EXT}"
 
-              echo "重命名："
+
+              echo
+              echo "重命名固件："
+
               echo "  $BASENAME"
-              echo "  ↓"
+
+              echo "       ↓"
+
               echo "  $NEW_FILE"
 
-              mv -f "$FILE" "./upload/$NEW_FILE"
+              echo
+
+
+              mv -f \
+                "$FILE" \
+                "./upload/$NEW_FILE"
+
 
             done < <(
+
               find ./bin/targets/ \
                 -type f \
                 -iname "*$WRT_TARGET*"
+
             )
 
 
             # ==================================================
-            # 剩余文件全部移动到 upload
+            # 剩余编译文件移动到 upload
+            #
+            # 包括：
             #
             # manifest
             # bl2
@@ -111,11 +865,12 @@
               -type f \
               -exec mv -f {} ./upload/ \;
 
+
           fi
 
 
           # ====================================================
-          # 显示准备上传的文件
+          # 显示最终准备上传的文件
           # ====================================================
 
           echo
@@ -123,11 +878,13 @@
           echo "准备上传的文件"
           echo "=================================================="
 
+
           find ./upload/ \
             -maxdepth 1 \
             -type f \
             -printf '%f    %s bytes\n' \
             | sort
+
 
           echo "=================================================="
 
@@ -135,24 +892,28 @@
       # ========================================================
       # 检查固件是否真正生成
       #
-      # 只在正常编译模式检查
+      # 正常编译必须存在 sysupgrade.bin
       #
-      # 如果没有 sysupgrade.bin
+      # 如果没有：
+      #
       # Actions 直接失败
       #
-      # 不允许出现：
+      # 防止出现：
       #
-      # 编译绿色
-      # 但实际上没有路由器固件
+      # 编译显示绿色
+      # 但 Release 没有真正固件
       # ========================================================
 
       - name: Verify Firmware
+
         if: env.WRT_TEST != 'true'
+
         shell: bash
 
         run: |
 
           set -euo pipefail
+
 
           echo "=================================================="
           echo "检查 MT3600BE 固件"
@@ -173,30 +934,48 @@
 
 
           # ====================================================
-          # 检查 sysupgrade 固件
+          # 显示 upload 文件
           # ====================================================
 
-          SYSUPGRADE=$(find ./wrt/upload/ \
+          echo
+          echo "upload目录文件："
+          echo
+
+
+          find ./wrt/upload/ \
             -maxdepth 1 \
             -type f \
-            -iname '*sysupgrade*.bin' \
-            -print \
-            -quit)
+            -printf '%f    %s bytes\n' \
+            | sort
 
+
+          echo
+
+
+          # ====================================================
+          # 查找 sysupgrade.bin
+          # ====================================================
+
+          SYSUPGRADE=$(
+
+            find ./wrt/upload/ \
+              -maxdepth 1 \
+              -type f \
+              -iname '*sysupgrade*.bin' \
+              -print \
+              -quit
+
+          )
+
+
+          # ====================================================
+          # 没找到固件
+          # ====================================================
 
           if [ -z "$SYSUPGRADE" ]; then
 
             echo
             echo "::error::没有找到 sysupgrade.bin 固件！"
-            echo
-            echo "当前 upload 目录内容："
-
-            find ./wrt/upload/ \
-              -maxdepth 1 \
-              -type f \
-              -printf '%f\n' \
-              | sort
-
             echo
             echo "固件发布已终止。"
 
@@ -206,15 +985,19 @@
 
 
           # ====================================================
-          # 检查固件大小
+          # 获取固件大小
           # ====================================================
 
           SIZE=$(stat -c%s "$SYSUPGRADE")
 
 
-          # 小于1MB肯定异常
+          # ====================================================
+          # 小于1MB基本肯定异常
+          # ====================================================
+
           if [ "$SIZE" -lt 1048576 ]; then
 
+            echo
             echo "::error::sysupgrade 固件大小异常：${SIZE} bytes"
 
             exit 1
@@ -225,25 +1008,31 @@
           echo
           echo "[OK] 找到 sysupgrade 固件："
           echo
+
           echo "$SYSUPGRADE"
+
           echo
-          echo "大小：${SIZE} bytes"
+
+          echo "固件大小：${SIZE} bytes"
+
           echo
-          echo "固件检查通过。"
+
+          echo "[OK] 固件检查通过"
+
           echo
+
           echo "=================================================="
 
 
       # ========================================================
       # 发布 GitHub Release
       #
-      # 不再使用 master
-      # 固定到 v2.6.2
+      # 使用稳定 v2
       #
-      # fail_on_unmatched_files:
+      # fail_on_unmatched_files=true
       #
-      # 如果上传路径匹配不到文件
-      # Actions 必须失败
+      # 如果 upload 没有任何文件
+      # 发布步骤直接失败
       # ========================================================
 
       - name: Release Firmware
@@ -256,11 +1045,9 @@
 
           files: ./wrt/upload/*.*
 
-          # 找不到文件时直接失败
           fail_on_unmatched_files: true
 
           body: |
-
 
             源码：${{ env.WRT_REPO }}
             分支：${{ env.WRT_BRANCH }}
@@ -280,20 +1067,26 @@
 
 
       # ========================================================
-      # 发布完成后二次验证
+      # Release 上传后二次验证
       #
-      # 不只相信上传 Action 返回成功
+      # 不只相信 action-gh-release 返回成功
       #
-      # 再从 GitHub Release API 读取一次
-      # 确认 Release 中真的存在 sysupgrade.bin
+      # 再通过 GitHub CLI
+      # 读取 Release 实际附件
+      #
+      # 必须确认真正存在：
+      #
+      # sysupgrade.bin
       # ========================================================
 
       - name: Verify Release Upload
+
         if: env.WRT_TEST != 'true'
 
         shell: bash
 
         env:
+
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
         run: |
@@ -307,24 +1100,36 @@
           echo "=================================================="
           echo "验证 GitHub Release"
           echo "=================================================="
+
+
           echo
-          echo "Tag：$TAG"
+          echo "Release Tag："
+
+          echo "$TAG"
+
           echo
 
 
           # ====================================================
-          # 读取 Release 中实际存在的附件
+          # 读取 Release 附件
           # ====================================================
 
-          ASSETS=$(gh release view "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json assets \
-            --jq '.assets[].name')
+          ASSETS=$(
+
+            gh release view "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json assets \
+              --jq '.assets[].name'
+
+          )
 
 
           echo "GitHub Release 中实际存在的附件："
+
           echo
+
           echo "$ASSETS"
+
           echo
 
 
@@ -335,11 +1140,15 @@
           if ! echo "$ASSETS" \
             | grep -qi 'sysupgrade.*\.bin$'; then
 
+
             echo
             echo "::error::GitHub Release 中没有找到 sysupgrade.bin！"
+
             echo
-            echo "虽然前面的发布步骤执行完毕，"
-            echo "但实际 Release 附件不完整。"
+            echo "Release 创建完成，但是附件中没有真正的路由器固件。"
+
+            echo
+            echo "本次 Actions 判定失败。"
 
             exit 1
 
@@ -347,8 +1156,11 @@
 
 
           echo
-          echo "[OK] GitHub Release 中已经确认存在 sysupgrade.bin"
+          echo "[OK] GitHub Release 中确认存在 sysupgrade.bin"
+
           echo
-          echo "固件上传验证完成。"
+          echo "[OK] Release 固件上传验证成功"
+
           echo
+
           echo "=================================================="
