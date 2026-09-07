@@ -1,51 +1,205 @@
 # SPDX-License-Identifier: MIT
 
-#固件保留最新的10个，多余的自动删除
+# MT3600BE 固件自动清理
 name: Auto-Clean
 
 on:
-  #自动清理：每天早上5点（北京时间）
+  # 每天北京时间 13:30 自动清理
+  # GitHub Actions 使用 UTC
+  # 05:30 UTC = 北京时间 13:30
+  #
+  # 不再放到凌晨5点，避免与凌晨3点开始的固件编译撞车
   schedule:
-    - cron: 0 21 * * *
-  #手动清理
+    - cron: '30 5 * * *'
+
+  # 支持手动运行
   workflow_dispatch:
 
-permissions: write-all
+permissions:
+  contents: write
+  actions: write
 
 jobs:
   auto_clean:
-    runs-on: ubuntu-24.04
+    name: Auto Clean
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Keep only the newest releases
+      - name: Clean old Releases
         env:
-          GH_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+        shell: bash
+
         run: |
-          KEEP_NUM=10
+          set -euo pipefail
 
-          RELEASES=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 300 --json tagName,createdAt)
-          TOTAL=$(echo "$RELEASES" | jq 'length')
+          # ==================================================
+          # 清理规则
+          # ==================================================
+          # 1. Latest Release 永远保留
+          # 2. 最新10个 Release 永远保留
+          # 3. 最近10天发布的 Release 永远保留
+          # 4. 只有同时不满足上面条件的旧 Release 才删除
+          #
+          # 重要：
+          # 必须按 publishedAt 排序
+          # 绝对不要再使用 createdAt
+          # ==================================================
 
-          echo "当前固件总数：$TOTAL"
-          echo "保留最新的：$KEEP_NUM 个"
-          echo "=================================="
+          KEEP_COUNT=10
+          KEEP_DAYS=10
 
-          if [ "$TOTAL" -le "$KEEP_NUM" ]; then
-            echo "数量未超过 $KEEP_NUM 个，无需清理。"
+          echo "=================================================="
+          echo "          MT3600BE Release 自动清理"
+          echo "=================================================="
+          echo
+          echo "保留规则："
+          echo "  1. Latest Release 永远保留"
+          echo "  2. 最新 ${KEEP_COUNT} 个 Release 永远保留"
+          echo "  3. 最近 ${KEEP_DAYS} 天发布的 Release 永远保留"
+          echo
+          echo "=================================================="
+
+          # 计算10天前的时间
+          CUTOFF_TIME=$(date -u -d "${KEEP_DAYS} days ago" +%s)
+
+          # ==================================================
+          # 获取 Release
+          #
+          # 关键修复：
+          # 使用 publishedAt，而不是 createdAt
+          #
+          # 并且明确按照 publishedAt 从新到旧排序
+          # ==================================================
+
+          mapfile -t RELEASES < <(
+            gh release list \
+              --repo "$GITHUB_REPOSITORY" \
+              --limit 1000 \
+              --exclude-drafts \
+              --json tagName,publishedAt,isLatest \
+              --jq 'sort_by(.publishedAt) | reverse | .[] | [.tagName, .publishedAt, .isLatest] | @tsv'
+          )
+
+          TOTAL=${#RELEASES[@]}
+
+          echo
+          echo "当前 Release 总数：${TOTAL}"
+          echo
+
+          # ==================================================
+          # Release 数量不足10个
+          # ==================================================
+
+          if [ "$TOTAL" -le "$KEEP_COUNT" ]; then
+
+            echo "[KEEP] 当前只有 ${TOTAL} 个 Release"
+            echo "[KEEP] 未超过保底数量 ${KEEP_COUNT}"
+            echo "[KEEP] 不删除任何固件"
+
             exit 0
+
           fi
 
-          echo "【保留】"
-          echo "$RELEASES" | jq -r --argjson n "$KEEP_NUM" \
-            'sort_by(.createdAt) | reverse | .[:$n] | .[] | "  " + .tagName'
+          # ==================================================
+          # 开始检查 Release
+          # ==================================================
 
-          echo "【删除】"
-          echo "$RELEASES" | jq -r --argjson n "$KEEP_NUM" \
-            'sort_by(.createdAt) | reverse | .[$n:] | .[].tagName' \
-            | while read -r TAG; do
-                [ -n "$TAG" ] || continue
-                echo "  $TAG"
-                gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
-              done
+          for i in "${!RELEASES[@]}"; do
 
-          echo "=================================="
-          echo "清理完成！"
+            INDEX=$((i + 1))
+
+            IFS=$'\t' read -r TAG_NAME RELEASE_DATE IS_LATEST \
+              <<< "${RELEASES[$i]}"
+
+            echo
+            echo "--------------------------------------------------"
+            echo "序号：${INDEX}/${TOTAL}"
+            echo "Tag ：${TAG_NAME}"
+            echo "发布时间：${RELEASE_DATE}"
+
+            # ==================================================
+            # 第一层保护
+            # Latest Release 永远不删除
+            # ==================================================
+
+            if [ "$IS_LATEST" = "true" ]; then
+
+              echo "[KEEP] Latest Release"
+              echo "[KEEP] 强制保留"
+
+              continue
+
+            fi
+
+            # ==================================================
+            # 第二层保护
+            # 最新10个 Release 永远不删除
+            # ==================================================
+
+            if [ "$INDEX" -le "$KEEP_COUNT" ]; then
+
+              echo "[KEEP] 属于最新 ${KEEP_COUNT} 个 Release"
+
+              continue
+
+            fi
+
+            # ==================================================
+            # 第三层保护
+            # 最近10天发布的 Release 永远不删除
+            # ==================================================
+
+            RELEASE_TIME=$(date -u -d "$RELEASE_DATE" +%s)
+
+            if [ "$RELEASE_TIME" -ge "$CUTOFF_TIME" ]; then
+
+              echo "[KEEP] 发布时间没有超过 ${KEEP_DAYS} 天"
+
+              continue
+
+            fi
+
+            # ==================================================
+            # 删除真正的旧版本
+            # ==================================================
+
+            echo "[DELETE] Release 已超过 ${KEEP_DAYS} 天"
+            echo "[DELETE] 并且不属于最新 ${KEEP_COUNT} 个"
+            echo "[DELETE] 删除 Release + Tag：${TAG_NAME}"
+
+            gh release delete "$TAG_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cleanup-tag \
+              --yes
+
+          done
+
+          echo
+          echo "=================================================="
+          echo "Release 清理完成"
+          echo "=================================================="
+
+      # ========================================================
+      # 清理旧 Actions 运行记录
+      #
+      # 注意：
+      # 这里绝对不允许删除 Release
+      # Release 已经由上面的安全逻辑处理
+      # ========================================================
+
+      - name: Clean old Workflow Runs
+        uses: ophub/delete-releases-workflows@main
+
+        with:
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # 禁止这个 Action 删除 Release
+          delete_releases: false
+
+          # 只清理旧 Actions 运行记录
+          delete_workflows: true
+
+          # 保留10天
+          workflows_keep_day: 10
