@@ -343,3 +343,131 @@ rm -rf "$GEO_TMP"
 
 echo "=================================================="
 echo ""
+
+echo ""
+echo "=================================================="
+echo " Open-Box（sing-box 面板，编译进 rootfs）"
+echo "=================================================="
+
+OB_PKG="open-box"
+# MT3600BE 是 aarch64（MT7987），用 arm64 包
+OB_ARCH="arm64"
+OB_BASE="https://github.com/liandu2024/Open-Box/releases/latest/download"
+OB_TAR="open-box-linux-${OB_ARCH}.tar.gz"
+# Makefile 配方行必须以真正的制表符开头，这里用变量生成，
+# 避免本文件被复制粘贴时 Tab 被转成空格导致 missing separator
+OB_TAB="$(printf '\t')"
+
+ob_say()  { echo "[open-box] $*"; }
+ob_warn() { echo "[open-box][警告] $*" >&2; }
+
+ob_build() {
+    local tmp root ver
+
+    tmp="$(mktemp -d)" || return 1
+
+    ob_say "下载 $OB_TAR"
+    curl -fsSL --connect-timeout 20 --max-time 900 --retry 3 --retry-delay 5 \
+        -o "$tmp/$OB_TAR" "$OB_BASE/$OB_TAR" && [ -s "$tmp/$OB_TAR" ] \
+        || { ob_warn "下载失败"; rm -rf "$tmp"; return 1; }
+
+    if curl -fsSL --connect-timeout 20 --max-time 60 --retry 3 \
+        -o "$tmp/$OB_TAR.sha256" "$OB_BASE/$OB_TAR.sha256"; then
+        ( cd "$tmp" && sha256sum -c "$OB_TAR.sha256" >/dev/null 2>&1 ) \
+            || { ob_warn "sha256 校验不通过，放弃"; rm -rf "$tmp"; return 1; }
+        ob_say "sha256 校验通过"
+    else
+        ob_warn "取不到 sha256 文件，本次跳过校验"
+    fi
+
+    root="./$OB_PKG/files"
+    rm -rf "./$OB_PKG"
+    mkdir -p "$root/opt/open-box" "$root/etc/init.d" "$root/etc/uci-defaults" \
+        "$root/usr/share/luci/menu.d" "$root/usr/share/rpcd/acl.d" \
+        "$root/www/luci-static/resources/view/openbox"
+
+    tar -xzf "$tmp/$OB_TAR" -C "$root/opt/open-box" \
+        || { ob_warn "解包失败"; rm -rf "$tmp" "./$OB_PKG"; return 1; }
+    rm -rf "$tmp"
+
+    [ -x "$root/opt/open-box/node/bin/node" ] && [ -x "$root/opt/open-box/bin/sing-box" ] \
+        || { ob_warn "解出的内容不完整"; rm -rf "./$OB_PKG"; return 1; }
+
+    ver="$(sed -n 's/.*"version"[^"]*"v\{0,1\}\([^"]*\)".*/\1/p' \
+        "$root/opt/open-box/meta.json" | head -n1)"
+    [ -n "$ver" ] || ver="0.0.0"
+
+    # install.sh 运行时做的铺装动作，这里改在编译期完成
+    cp -f "$root/opt/open-box/openwrt/initd/openbox"       "$root/etc/init.d/openbox"
+    cp -f "$root/opt/open-box/openwrt/initd/openbox-panel" "$root/etc/init.d/openbox-panel"
+    chmod 755 "$root/etc/init.d/openbox" "$root/etc/init.d/openbox-panel"
+
+    cp -f "$root/opt/open-box/openwrt/luci/root/usr/share/luci/menu.d/luci-app-openbox.json" \
+        "$root/usr/share/luci/menu.d/"
+    cp -f "$root/opt/open-box/openwrt/luci/root/usr/share/rpcd/acl.d/luci-app-openbox.json" \
+        "$root/usr/share/rpcd/acl.d/"
+    cp -f "$root/opt/open-box/openwrt/luci/htdocs/luci-static/resources/view/openbox/status.js" \
+        "$root/www/luci-static/resources/view/openbox/"
+
+    cat > "$root/etc/uci-defaults/99-open-box" <<'OBUCI'
+#!/bin/sh
+# 首次启动 / 恢复出厂后执行一次
+rm -rf /tmp/luci-modulecache/* /tmp/luci-indexcache* 2>/dev/null
+[ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart >/dev/null 2>&1
+# 只拉面板；内核服务留给面板生成 config.json 之后自己 enable
+if [ -x /etc/init.d/openbox-panel ]; then
+    /etc/init.d/openbox-panel enable
+    /etc/init.d/openbox-panel start
+fi
+exit 0
+OBUCI
+    chmod 755 "$root/etc/uci-defaults/99-open-box"
+
+    cat > "./$OB_PKG/Makefile" <<OBEOF
+include \$(TOPDIR)/rules.mk
+
+PKG_NAME:=$OB_PKG
+PKG_VERSION:=$ver
+PKG_RELEASE:=1
+PKG_MAINTAINER:=lujunxi
+PKG_LICENSE:=MIT
+
+# 预编译二进制（musl Node / sing-box），禁止 buildroot 再 strip
+RSTRIP:=:
+STRIP:=:
+
+include \$(INCLUDE_DIR)/package.mk
+
+define Package/$OB_PKG
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=Web Servers/Proxies
+  TITLE:=Open-Box (sing-box + panel) prebuilt
+  DEPENDS:=+libc +luci-base +rpcd +kmod-tun +nftables +ip-full +ca-bundle +curl
+endef
+
+define Build/Prepare
+${OB_TAB}mkdir -p \$(PKG_BUILD_DIR)
+endef
+
+define Build/Configure
+endef
+
+define Build/Compile
+endef
+
+define Package/$OB_PKG/install
+${OB_TAB}\$(CP) ./files/. \$(1)/
+endef
+
+\$(eval \$(call BuildPackage,$OB_PKG))
+OBEOF
+
+    ob_say "源码包已生成：package/$OB_PKG （版本 $ver，$(du -sh "$root" | cut -f1)）"
+    return 0
+}
+
+ob_build || ob_warn "Open-Box 未编入本次固件，其余部分照常"
+
+echo "=================================================="
+echo ""
