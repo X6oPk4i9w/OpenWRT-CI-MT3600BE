@@ -446,6 +446,16 @@ define Package/$OB_PKG
   DEPENDS:=+libc +luci-base +rpcd +kmod-tun +nftables +ip-full +ca-bundle +curl
 endef
 
+# Open-Box 捆绑的 node/lib/libstdc++.so.6 是用 Alpine 的 musl 工具链编的，
+# DT_NEEDED 写成 libc.musl-aarch64.so.1；而 OpenWrt 的 libc 包只 provides
+# libc.so，CheckDependencies 做整行精确匹配，对不上就报缺依赖。
+# 运行时其实没问题：musl 的动态链接器会把任何 libc.* 解析到它自己。
+# 这里用官方支持的 extra_provides 单独给这一个 SONAME 放行，
+# 不是关闭整个依赖检查。
+define Package/$OB_PKG/extra_provides
+${OB_TAB}echo libc.musl-aarch64.so.1;
+endef
+
 define Build/Prepare
 ${OB_TAB}mkdir -p \$(PKG_BUILD_DIR)
 endef
