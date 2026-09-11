@@ -1,0 +1,119 @@
+#!/bin/sh
+
+# ============================================================
+# GL-MT3600BE USB 4G 网卡默认 WAN 配置
+#
+# USB 网卡设备：
+#   eth2
+#
+# 创建接口：
+#   USBIPV4 -> DHCP Client
+#   USBIPV6 -> DHCPv6 Client
+#
+# 防火墙：
+#   USBIPV4 / USBIPV6 自动加入 wan 区域
+#
+# 本脚本位于：
+#   /etc/uci-defaults/98-usb-wan
+#
+# 只在固件首次启动时执行
+# ============================================================
+
+
+# ============================================================
+# 1. USB IPv4
+# ============================================================
+
+uci -q delete network.USBIPV4
+
+uci -q set network.USBIPV4='interface'
+
+# DHCP 客户端
+uci -q set network.USBIPV4.proto='dhcp'
+
+# USB 网卡
+uci -q set network.USBIPV4.device='eth2'
+
+# DHCP Client ID
+uci -q set network.USBIPV4.sendclientid='auto'
+
+# 关闭 multipath
+uci -q set network.USBIPV4.multipath='off'
+
+
+# ============================================================
+# 2. USB IPv6
+# ============================================================
+
+uci -q delete network.USBIPV6
+
+uci -q set network.USBIPV6='interface'
+
+# 必须使用 DHCPv6 客户端
+# 这是你实际测试可以正常获取 IPv6 的协议
+uci -q set network.USBIPV6.proto='dhcpv6'
+
+# 与 IPv4 共用 eth2
+uci -q set network.USBIPV6.device='eth2'
+
+
+# ============================================================
+# 3. 保存网络配置
+# ============================================================
+
+uci -q commit network
+
+
+# ============================================================
+# 4. 将 USBIPV4 / USBIPV6 加入 wan 防火墙区域
+#
+# 不写死：
+#
+#   firewall.@zone[1]
+#
+# 因为以后上游 firewall 配置顺序可能变化。
+#
+# 根据：
+#
+#   option name 'wan'
+#
+# 自动寻找 WAN zone。
+# ============================================================
+
+WAN_ZONE="$(uci -q show firewall | \
+    sed -n "s/^\(firewall\.[^.]*\)\.name='wan'$/\1/p" | \
+    head -n 1)"
+
+
+if [ -n "$WAN_ZONE" ]; then
+
+    # --------------------------------------------------------
+    # 防止重复添加
+    # --------------------------------------------------------
+
+    uci -q del_list "${WAN_ZONE}.network=USBIPV4"
+    uci -q del_list "${WAN_ZONE}.network=USBIPV6"
+
+
+    # --------------------------------------------------------
+    # 加入 WAN zone
+    # --------------------------------------------------------
+
+    uci -q add_list "${WAN_ZONE}.network=USBIPV4"
+    uci -q add_list "${WAN_ZONE}.network=USBIPV6"
+
+
+    # --------------------------------------------------------
+    # 保存防火墙配置
+    # --------------------------------------------------------
+
+    uci -q commit firewall
+
+fi
+
+
+# ============================================================
+# 5. 完成
+# ============================================================
+
+exit 0
