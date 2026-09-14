@@ -477,7 +477,8 @@ OBEOF
     return 0
 }
 
-ob_build || ob_warn "Open-Box 未编入本次固件，其余部分照常"
+# ob_build || ob_warn "Open-Box 未编入本次固件，其余部分照常"
+echo "[open-box] 已关闭：本次不下载、不打包"
 
 echo "=================================================="
 echo ""
