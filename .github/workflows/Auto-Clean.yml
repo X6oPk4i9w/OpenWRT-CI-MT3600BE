@@ -1,4 +1,3 @@
-```yaml
 # SPDX-License-Identifier: MIT
 
 # ============================================================
@@ -7,346 +6,188 @@
 
 name: Auto-Clean
 
-
 on:
-
-  # ==========================================================
   # 每天北京时间 13:30 自动运行
-  #
   # GitHub Actions 使用 UTC
-  #
-  # 05:30 UTC
-  # =
-  # 北京时间 13:30
+  # 05:30 UTC = 北京时间 13:30
   #
   # 固件每天北京时间 03:00 开始编译
-  # 清理放到 13:30
-  # 尽量避免与固件编译发生冲突
-  # ==========================================================
-
+  # 清理放到 13:30，尽量避免与固件编译发生冲突
   schedule:
     - cron: '30 5 * * *'
 
-
-  # ==========================================================
   # 支持手动运行
-  # ==========================================================
-
   workflow_dispatch:
-
 
 # ============================================================
 # 最小权限
 # ============================================================
 
 permissions:
-
   # 删除 Release / Tag
   contents: write
 
   # 删除旧 Workflow Runs
   actions: write
 
-
 jobs:
-
   auto_clean:
-
     name: Auto Clean
-
     runs-on: ubuntu-latest
 
-
     steps:
-
       # ========================================================
       # 清理旧 Release
       # ========================================================
 
       - name: Clean old Releases
-
         env:
-
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
 
         shell: bash
 
-
         run: |
-
           set -euo pipefail
-
 
           # ====================================================
           # 清理规则
-          # ====================================================
           #
-          # 第一层保护：
+          # 1. Latest Release 永远保留
+          # 2. 最新 10 个 Release 永远保留
+          # 3. 最近 10 天发布的 Release 永远保留
           #
-          #   Latest Release 永远保留
+          # 只有同时满足下面三个条件才允许删除：
           #
-          #
-          # 第二层保护：
-          #
-          #   最新 10 个 Release 永远保留
-          #
-          #
-          # 第三层保护：
-          #
-          #   最近 10 天发布的 Release 永远保留
-          #
-          #
-          # 只有：
-          #
-          #   不是 Latest
-          #
-          #   并且
-          #
-          #   不属于最新 10 个
-          #
-          #   并且
-          #
-          #   发布时间超过 10 天
-          #
-          # 才允许删除
-          #
+          # - 不是 Latest Release
+          # - 不属于最新 10 个 Release
+          # - publishedAt 已经超过 10 天
           #
           # 重要：
           #
           # 必须按照 publishedAt 判断发布时间
-          #
           # 禁止再次使用 createdAt
-          #
           # ====================================================
 
-
-          KEEP_COUNT=10
-
+          KEEP_NUM=10
           KEEP_DAYS=10
 
-
-          # ====================================================
-          # 删除统计
-          # ====================================================
-
           DELETE_COUNT=0
-
-          KEEP_COUNT_TOTAL=0
-
+          KEEP_TOTAL=0
           DELETE_FAILED=0
 
-
           echo "=================================================="
-
           echo "        MT3600BE Release 自动清理"
-
           echo "=================================================="
-
           echo
-
           echo "保留规则："
-
-          echo
-
           echo "  1. Latest Release 永远保留"
-
-          echo "  2. 最新 ${KEEP_COUNT} 个 Release 永远保留"
-
+          echo "  2. 最新 ${KEEP_NUM} 个 Release 永远保留"
           echo "  3. 最近 ${KEEP_DAYS} 天发布的 Release 永远保留"
-
           echo
-
           echo "=================================================="
 
-
           # ====================================================
-          # 计算时间边界
-          #
-          # 当前 UTC 时间往前推 10 天
+          # 计算 10 天前的 UTC 时间戳
           # ====================================================
 
-          CUTOFF_TIME=$(
-
-            date -u \
-              -d "${KEEP_DAYS} days ago" \
-              +%s
-
-          )
-
+          CUTOFF_TIME="$(date -u -d "${KEEP_DAYS} days ago" +%s)"
 
           echo
-
-          echo "清理时间："
-
-          date -u '+  UTC：%Y-%m-%d %H:%M:%S'
-
+          echo "当前 UTC 时间："
+          date -u '+  %Y-%m-%d %H:%M:%S'
           echo
-
-          echo "超过以下时间的 Release 才可能被删除："
-
-          date -u \
-            -d "@${CUTOFF_TIME}" \
-            '+  UTC：%Y-%m-%d %H:%M:%S'
-
+          echo "删除时间边界："
+          date -u -d "@${CUTOFF_TIME}" '+  %Y-%m-%d %H:%M:%S'
           echo
-
 
           # ====================================================
           # 获取 Release
           #
-          # 这里不能直接：
+          # 不直接使用：
           #
           # mapfile < <(gh release list ...)
           #
-          # 因为 Process Substitution 内部 gh 命令失败时，
-          # 外部 mapfile 不一定能够正确得到失败状态。
-          #
-          #
-          # 所以：
-          #
-          # 先单独执行 gh release list
-          #
-          # 明确检查 gh 命令是否执行成功
-          #
-          # 然后再解析结果。
+          # 而是先单独执行 gh，
+          # 这样可以准确判断 GitHub CLI 是否执行失败。
           # ====================================================
 
-
           echo "=================================================="
-
           echo "读取 GitHub Releases"
-
           echo "=================================================="
-
           echo
 
-
-          if ! RELEASE_OUTPUT=$(
-
+          if ! RELEASE_OUTPUT="$(
             gh release list \
               --repo "$GITHUB_REPOSITORY" \
               --limit 1000 \
               --exclude-drafts \
               --json tagName,publishedAt,isLatest \
-              --jq \
-              'sort_by(.publishedAt) |
-               reverse |
-               .[] |
-               [.tagName, .publishedAt, .isLatest] |
-               @tsv'
-
-          ); then
-
+              --jq 'sort_by(.publishedAt) | reverse | .[] | [.tagName, .publishedAt, .isLatest] | @tsv'
+          )"; then
 
             echo
-
             echo "[ERROR] 获取 GitHub Release 列表失败"
-
             echo
-
             echo "[ERROR] 可能原因："
-
-            echo "  GitHub API 请求失败"
-
-            echo "  GITHUB_TOKEN 权限异常"
-
-            echo "  GitHub CLI 执行异常"
-
-            echo "  GitHub 服务暂时异常"
-
+            echo "  - GitHub API 请求失败"
+            echo "  - GITHUB_TOKEN 权限异常"
+            echo "  - GitHub CLI 执行异常"
+            echo "  - GitHub 服务暂时异常"
             echo
-
             echo "[ERROR] 为防止误删，本次立即终止"
-
             echo
-
 
             exit 1
-
           fi
 
-
           # ====================================================
-          # 没有任何 Release
-          #
-          # 这是正常情况
+          # 0 个 Release 是正常状态
           #
           # 例如：
           #
-          # 仓库刚建立
-          # 或者
-          # 用户手动删除了全部 Release
+          # - 仓库刚建立
+          # - 用户手动清空了所有 Release
           # ====================================================
 
           if [ -z "$RELEASE_OUTPUT" ]; then
 
-
             echo "[OK] GitHub Release 查询成功"
-
             echo
-
             echo "[KEEP] 当前仓库没有任何 Release"
-
-            echo
-
             echo "[KEEP] 无需执行 Release 清理"
-
             echo
-
 
             exit 0
-
           fi
 
-
           # ====================================================
-          # 转换成数组
+          # 转换为数组
           # ====================================================
 
           mapfile -t RELEASES <<< "$RELEASE_OUTPUT"
 
-
-          TOTAL=${#RELEASES[@]}
-
+          TOTAL="${#RELEASES[@]}"
 
           echo "[OK] GitHub Release 查询成功"
-
           echo
-
           echo "当前 Release 总数：${TOTAL}"
-
           echo
-
 
           # ====================================================
           # Release 数量 <= 10
           #
-          # 全部属于最低保留数量
-          #
-          # 不做删除
+          # 全部属于最低保留范围
           # ====================================================
 
-          if [ "$TOTAL" -le "$KEEP_COUNT" ]; then
-
+          if [ "$TOTAL" -le "$KEEP_NUM" ]; then
 
             echo "[KEEP] 当前只有 ${TOTAL} 个 Release"
-
-            echo
-
-            echo "[KEEP] 未超过最低保留数量 ${KEEP_COUNT}"
-
-            echo
-
+            echo "[KEEP] 未超过最低保留数量 ${KEEP_NUM}"
             echo "[KEEP] 本次不删除任何 Release"
-
             echo
-
 
             exit 0
-
           fi
-
 
           # ====================================================
           # 开始逐个检查
@@ -354,376 +195,222 @@ jobs:
 
           for i in "${!RELEASES[@]}"; do
 
-
             INDEX=$((i + 1))
 
-
-            IFS=$'\t' read -r \
-              TAG_NAME \
-              RELEASE_DATE \
-              IS_LATEST \
+            IFS=$'\t' read -r TAG_NAME RELEASE_DATE IS_LATEST \
               <<< "${RELEASES[$i]}"
 
-
             echo
-
             echo "--------------------------------------------------"
-
             echo "Release：${INDEX}/${TOTAL}"
-
             echo "Tag：${TAG_NAME}"
-
             echo "发布时间：${RELEASE_DATE}"
-
             echo "Latest：${IS_LATEST}"
-
             echo "--------------------------------------------------"
 
-
             # ==================================================
-            # 安全检查
-            #
-            # Tag 为空
-            #
-            # 不允许继续执行删除逻辑
+            # 安全检查：Tag 不能为空
             # ==================================================
 
-            if [ -z "$TAG_NAME" ]; then
-
+            if [ -z "${TAG_NAME:-}" ]; then
 
               echo "[WARN] Release Tag 为空"
+              echo "[KEEP] 为防止误删，本条记录强制保留"
 
-              echo "[WARN] 为防止误删，本条记录跳过"
-
-
-              KEEP_COUNT_TOTAL=$((KEEP_COUNT_TOTAL + 1))
-
+              KEEP_TOTAL=$((KEEP_TOTAL + 1))
 
               continue
-
             fi
-
 
             # ==================================================
             # 第一层保护
             #
-            # Latest Release
-            #
-            # 永远不删除
+            # Latest Release 永远不删除
             # ==================================================
 
-            if [ "$IS_LATEST" = "true" ]; then
-
+            if [ "${IS_LATEST:-false}" = "true" ]; then
 
               echo "[KEEP] Latest Release"
-
               echo "[KEEP] 强制保留"
 
-
-              KEEP_COUNT_TOTAL=$((KEEP_COUNT_TOTAL + 1))
-
+              KEEP_TOTAL=$((KEEP_TOTAL + 1))
 
               continue
-
             fi
-
 
             # ==================================================
             # 第二层保护
             #
-            # 最新 10 个
-            #
-            # 永远不删除
+            # 最新 10 个 Release 永远不删除
             # ==================================================
 
-            if [ "$INDEX" -le "$KEEP_COUNT" ]; then
+            if [ "$INDEX" -le "$KEEP_NUM" ]; then
 
+              echo "[KEEP] 属于最新 ${KEEP_NUM} 个 Release"
 
-              echo "[KEEP] 属于最新 ${KEEP_COUNT} 个 Release"
-
-
-              KEEP_COUNT_TOTAL=$((KEEP_COUNT_TOTAL + 1))
-
+              KEEP_TOTAL=$((KEEP_TOTAL + 1))
 
               continue
-
             fi
 
-
             # ==================================================
-            # 安全检查
-            #
-            # publishedAt 为空
-            #
-            # 禁止删除
+            # 安全检查：publishedAt 不能为空
             # ==================================================
 
-            if [ -z "$RELEASE_DATE" ]; then
-
+            if [ -z "${RELEASE_DATE:-}" ]; then
 
               echo "[WARN] publishedAt 为空"
+              echo "[KEEP] 无法确认发布时间，为防止误删强制保留"
 
-              echo "[WARN] 无法确认 Release 发布时间"
-
-              echo "[KEEP] 为防止误删，强制保留"
-
-
-              KEEP_COUNT_TOTAL=$((KEEP_COUNT_TOTAL + 1))
-
+              KEEP_TOTAL=$((KEEP_TOTAL + 1))
 
               continue
-
             fi
 
-
             # ==================================================
-            # 将 GitHub publishedAt 转换为 UNIX 时间戳
+            # publishedAt 转换为 UNIX 时间戳
             #
-            # 如果日期解析失败：
+            # 日期解析失败时：
             #
             # 不删除
             # ==================================================
 
-            if ! RELEASE_TIME=$(
-
-              date -u \
-                -d "$RELEASE_DATE" \
-                +%s \
-                2>/dev/null
-
-            ); then
-
+            if ! RELEASE_TIME="$(
+              date -u -d "$RELEASE_DATE" +%s 2>/dev/null
+            )"; then
 
               echo "[WARN] 无法解析 publishedAt：${RELEASE_DATE}"
+              echo "[KEEP] 为防止误删强制保留"
 
-              echo "[KEEP] 为防止误删，强制保留"
-
-
-              KEEP_COUNT_TOTAL=$((KEEP_COUNT_TOTAL + 1))
-
+              KEEP_TOTAL=$((KEEP_TOTAL + 1))
 
               continue
-
             fi
-
 
             # ==================================================
             # 第三层保护
             #
-            # 最近 10 天
-            #
-            # 永远不删除
+            # 最近 10 天发布的 Release 永远不删除
             # ==================================================
 
             if [ "$RELEASE_TIME" -ge "$CUTOFF_TIME" ]; then
 
-
               echo "[KEEP] 发布时间没有超过 ${KEEP_DAYS} 天"
 
-
-              KEEP_COUNT_TOTAL=$((KEEP_COUNT_TOTAL + 1))
-
+              KEEP_TOTAL=$((KEEP_TOTAL + 1))
 
               continue
-
             fi
-
 
             # ==================================================
             # 到这里意味着：
             #
-            # 不是 Latest
+            # - 不是 Latest
+            # - 不属于最新 10 个
+            # - 发布时间超过 10 天
             #
-            # 并且
-            #
-            # 不属于最新 10 个
-            #
-            # 并且
-            #
-            # 发布时间已经超过 10 天
-            #
+            # 三个删除条件全部满足
             # ==================================================
 
-
             echo
-
             echo "[DELETE] 满足删除条件"
-
+            echo "[DELETE] 已超过 ${KEEP_DAYS} 天"
+            echo "[DELETE] 不属于最新 ${KEEP_NUM} 个"
+            echo "[DELETE] 不是 Latest Release"
             echo
-
-            echo "[DELETE] Release 已超过 ${KEEP_DAYS} 天"
-
-            echo "[DELETE] 并且不属于最新 ${KEEP_COUNT} 个"
-
-            echo "[DELETE] 并且不是 Latest Release"
-
+            echo "[DELETE] 删除 Release + Tag：${TAG_NAME}"
             echo
-
-            echo "[DELETE] 准备删除 Release + Tag："
-
-            echo
-
-            echo "  ${TAG_NAME}"
-
-            echo
-
 
             # ==================================================
-            # 删除 Release + 对应 Tag
+            # 删除 Release + Tag
             #
-            # 单个删除失败：
-            #
-            # 不立即终止整个循环
+            # 单个删除失败不立即停止整个循环
             #
             # 继续处理剩余 Release
             #
-            # 但是记录 DELETE_FAILED
-            #
-            # 最终整个 Job 会返回失败
+            # 最后统一判断是否有失败
             # ==================================================
 
             if gh release delete "$TAG_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --cleanup-tag \
-              --yes
-            then
-
+              --yes; then
 
               echo
-
               echo "[OK] 删除成功：${TAG_NAME}"
-
 
               DELETE_COUNT=$((DELETE_COUNT + 1))
 
-
             else
 
-
               echo
-
               echo "[ERROR] 删除失败：${TAG_NAME}"
-
               echo "[ERROR] 继续处理其他 Release"
 
-
               DELETE_FAILED=$((DELETE_FAILED + 1))
-
             fi
 
-
           done
-
 
           # ====================================================
           # 清理结果
           # ====================================================
 
           echo
-
           echo "=================================================="
-
           echo "             Release 清理结果"
-
           echo "=================================================="
-
           echo
-
           echo "Release 总数：${TOTAL}"
-
-          echo
-
-          echo "保留数量：${KEEP_COUNT_TOTAL}"
-
-          echo
-
+          echo "保留数量：${KEEP_TOTAL}"
           echo "成功删除：${DELETE_COUNT}"
-
-          echo
-
           echo "删除失败：${DELETE_FAILED}"
-
           echo
-
           echo "=================================================="
-
 
           # ====================================================
-          # 如果存在删除失败
+          # 如果有 Release 删除失败
           #
-          # 所有其他 Release 已经尽可能处理完毕
+          # 所有其他项目已经尽量处理完毕
           #
-          # 最后再将 Job 标记为失败
-          #
-          # 防止：
-          #
-          # 明明有 Release 删除失败
-          # Actions 却显示 Success
+          # 最后再将当前步骤标记为失败
           # ====================================================
 
           if [ "$DELETE_FAILED" -gt 0 ]; then
 
-
             echo
-
             echo "[ERROR] 有 ${DELETE_FAILED} 个 Release 删除失败"
-
+            echo "[ERROR] 请检查上面的日志"
             echo
-
-            echo "[ERROR] 请检查上面的 GitHub Actions 日志"
-
-            echo
-
 
             exit 1
-
           fi
 
-
           echo
-
           echo "[OK] Release 清理完成"
-
           echo
-
 
       # ========================================================
       # 清理旧 GitHub Actions Workflow Runs
       #
       # 注意：
       #
-      # 这个 Action 绝对不允许删除 Release
+      # 第三方 Action 不允许删除任何 Release
       #
-      # Release 只能由上面我们自己的安全逻辑负责
+      # Release 只能由上面的安全逻辑处理
       # ========================================================
 
       - name: Clean old Workflow Runs
-
         uses: ophub/delete-releases-workflows@main
 
-
         with:
-
           gh_token: ${{ secrets.GITHUB_TOKEN }}
 
-
-          # ====================================================
           # 禁止第三方 Action 删除 Release
-          # ====================================================
-
           delete_releases: false
 
-
-          # ====================================================
           # 只删除旧 Workflow Runs
-          # ====================================================
-
           delete_workflows: true
 
-
-          # ====================================================
           # Workflow Runs 保留 10 天
-          # ====================================================
-
           workflows_keep_day: 10
-```
