@@ -366,7 +366,6 @@ jobs:
           src-git mosdns https://github.com/sbwml/luci-app-mosdns.git;v5
           src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main
           src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main
-          src-git helloworld https://github.com/fw876/helloworld.git
           src-git openclash https://github.com/vernesong/OpenClash.git
           src-git istore https://github.com/linkease/istore;main
           EOF
@@ -418,12 +417,6 @@ jobs:
           rm -rf ./feeds/packages/net/hysteria
 
           rm -rf ./feeds/packages/net/naiveproxy
-
-
-          # helloworld 的 mihomo 打包时调用 $(STAGING_DIR_HOST)/bin/upx
-          # packages 自带的 upx 走 cmake，host 版装到 staging_dir/hostpkg，路径对不上 → Error 127
-          # 删掉它，让 helloworld 自带的 upx（装到 staging_dir/host/bin）生效
-          rm -rf ./feeds/packages/utils/upx
 
 
           # ====================================================
